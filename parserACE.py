@@ -1,9 +1,8 @@
 from xml.etree import ElementTree
 from bs4 import BeautifulSoup
-import nltk
 import json
 import re
-
+import nltk
 
 class Parser:
     def __init__(self, path):
@@ -12,7 +11,7 @@ class Parser:
         self.sentences = []
 
         self.entity_mentions, self.event_mentions, self.value_tag = self.parse_xml(path + '.apf.xml')
-        self.sents_with_pos, self.full_doc = self.parse_sgm(path + '.sgm')
+        self.sents_with_pos, self.full_doc, self.headlines, self.extracted_tags = self.parse_sgm(path + '.sgm')
         self.event_mentions = self.get_head4arg(self.event_mentions, self.entity_mentions)
         self.modifyCollapseEntity()
 
@@ -41,19 +40,20 @@ class Parser:
                     collapse = range_1 & range_2
                     if len(collapse):
 
-                        merged_string = self.merge2string(entity, entity2)
-                        self.entity_mentions[i]['text'] = merged_string[0]
-                        self.entity_mentions[i]['position'] = [merged_string[1], merged_string[2]]
-                        map_changed[entity2['entity-id']] = entity['entity-id']
-                        del self.entity_mentions[j]
+                        # merged_string = self.merge2string(entity, entity2)
+                        # self.entity_mentions[i]['text'] = merged_string[0]
+                        # self.entity_mentions[i]['position'] = [merged_string[1], merged_string[2]]
+                        # map_changed[entity2['entity-id']] = entity['entity-id']
+                        # del self.entity_mentions[j]
                         count +=1
+                        print(entity['text'], "|", entity['entity-type'], " -> ", entity2['text'], entity2['entity-type'])
 
 
-        print('->found {} intersecting cases'.format(count))
-        for ide, event in enumerate(self.event_mentions):
-            for ida, arg in enumerate(event['arguments']):
-                if arg['entity-id'] in map_changed.keys():
-                    self.event_mentions[ide]['arguments'][ida]['entity-id'] = map_changed[arg['entity-id']]
+        # print('->found {} intersecting cases'.format(count))
+        # for ide, event in enumerate(self.event_mentions):
+        #     for ida, arg in enumerate(event['arguments']):
+        #         if arg['entity-id'] in map_changed.keys():
+        #             self.event_mentions[ide]['arguments'][ida]['entity-id'] = map_changed[arg['entity-id']]
 
 
     def merge2string(self, entity, entity2):
@@ -153,6 +153,7 @@ class Parser:
 
                 # if entity_mention['text'] =='petrel':
                 #     print(check_entity)
+
                 if check_entity:
                     count_entity +=1
                     list_found_entity.append(entity_mention)
@@ -193,12 +194,12 @@ class Parser:
                     for argument in event_mention['arguments']:
                         try:
                             event_arguments.append({
-                            'role': argument['role'],
-                            'text': entity_map_sent[argument['entity-id']][0],
-                            'extent-text': clean_text((argument['extent-text'])),
-                            'entity-type': argument['entity-type'],
-                            'position': entity_map_sent[argument['entity-id']][1:],
-                            'entity-id':argument['entity-id'],
+                                'role': argument['role'],
+                                'text': entity_map_sent[argument['entity-id']][0],
+                                'extent-text': clean_text((argument['extent-text'])),
+                                'entity-type': argument['entity-type'],
+                                'position': entity_map_sent[argument['entity-id']][1:],
+                                'entity-id':argument['entity-id'],
                             })
                         except Exception as e:
                             print('error infor: ',e)
@@ -209,10 +210,11 @@ class Parser:
 
                     cleaned_trigger = clean_text(event_mention['trigger']['text'])
                     item['golden-event-mentions'].append({
-                        'trigger': {'text': cleaned_trigger,
-                                   'position': [event_mention['trigger']['position'][0],
-                                                event_mention['trigger']['position'][0]+ len(cleaned_trigger)-1]
-                                    },
+                        'trigger': {
+                            'text': cleaned_trigger,
+                            'position': [event_mention['trigger']['position'][0],
+                                        event_mention['trigger']['position'][0]+ len(cleaned_trigger)-1]
+                        },
                         'arguments': event_arguments,
                         'event_type': event_mention['event_type'],
                     })
@@ -231,7 +233,48 @@ class Parser:
         for entity in self.entity_mentions:
             if entity not in list_found_entity:
                 print(entity['entity-id'], entity['text'], entity['position'])
+
         return data
+    def check_headline(self):
+        check_annotated = False
+        for headline in self.headlines:
+            text_position = headline['position']
+            text = headline['text']
+            count = 0
+
+            for entity_mention in self.entity_mentions:
+                entity_position = entity_mention['position']
+                check_entity = False
+                pos = text.find(entity_mention['text'])
+
+                while (pos != -1):
+                    # if entity_mention['text'] =='petrel':
+                    #     print(entity_mention['text'], pos, entity_position, text_position)
+
+                    if (pos + text_position[0] - 10 < entity_position[0] and pos + text_position[0] >= entity_position[0]) or \
+                            (pos + text_position[0] + 10 > entity_position[0] and pos + text_position[0] < entity_position[0]):
+                        check_entity = True
+                        break
+                    else:
+                        pos = text.find(entity_mention['text'], pos + 1)
+
+
+                if check_entity:
+                    check_annotated = True
+
+            for event_mention in self.event_mentions:
+                event_position = event_mention['trigger']['position']
+                check_event = False
+
+                if text_position[0] - 4 <= event_position[0] and text_position[0] <= event_position[1] and event_position[
+                    1] <= text_position[1] + 8 and text.find(event_mention['text']) != -1:
+                    check_event = True
+
+                if check_event:
+                    check_annotated = True
+
+
+        return check_annotated
 
     @staticmethod
     def parse_sgm(sgm_path):
@@ -248,8 +291,41 @@ class Parser:
             if doc_type == ' WEB TEXT ':
                 remove_tags('poster')
                 remove_tags('postdate')
+                remove_tags('subject')
             elif doc_type in [' CONVERSATION ', ' STORY ']:
                 remove_tags('speaker')
+
+            def export_(selectors):
+                special_text = []
+                for selector in selectors:
+                    tags = soup.findAll(selector)
+                    for tag in tags:
+                        text = tag.text.replace('f .', 'f.').replace('U.S<dot>', 'U.S.').replace('p.m<dot>',
+                                                                                                 'p.m.').replace(
+                            'a.m<dot>', 'a.m.') \
+                            .replace('U.N<dot>', 'U.N.').replace('u.n<dot>', 'u.n.').replace('u.s<dot>',
+                                                                                             'u.s.').replace(
+                            'p.o.w<dot>', 'p.o.w.') \
+                            .replace('w<mod>', "w.''").replace('germ<dot>', 'germ.').replace('dr<dot>', 'dr.').replace(
+                            'mt<dot>', 'mt.') \
+                            .replace('Gov<dot>', 'Gov.').replace('Sen<mod> .', 'Sen.').replace('1998<mod> .',
+                                                                                               '1998.').replace(
+                            '1980<mod> .', '1980.') \
+                            .replace('2000<mod> .', '2000.').replace('1985<mod> .', '1985.').replace('2001<mod> .',
+                                                                                                     '2001.')
+
+                        pos = sgm_text.find(text, 0)
+                        special_text.append({
+                            "text": text.strip(),
+                            "position": [pos, pos + len(text) - 1],
+                            "tag": selector
+                        })
+
+                        tag.extract()
+
+                return special_text
+
+            headlines = export_(['headline', 'subject'])
 
             sents = []
             # text after remove some tags
@@ -270,6 +346,7 @@ class Parser:
             sents = sents[1:]
             sents_with_pos = []
             last_pos = 0
+
             for sent in sents:
                 sent = sent.replace('f .','f.').replace('U.S<dot>', 'U.S.').replace('p.m<dot>', 'p.m.').replace('a.m<dot>','a.m.')\
                     .replace('U.N<dot>', 'U.N.').replace('u.n<dot>','u.n.').replace('u.s<dot>','u.s.').replace('p.o.w<dot>','p.o.w.')\
@@ -288,7 +365,7 @@ class Parser:
                     'position': [pos, pos + len(sent)-1]
                 })
             # print(sents_with_pos)
-            return sents_with_pos, converted_text_ori
+            return sents_with_pos, converted_text_ori, headlines, []
 
     def parse_xml(self, xml_path):
         entity_mentions, event_mentions = [], []
@@ -322,10 +399,7 @@ class Parser:
             entity_mention = dict()
             entity_mention['entity-id'] = child.attrib['ID']
             entity_mention['entity-type'] = '{}:{}'.format(node.attrib['TYPE'], node.attrib['SUBTYPE'])
-            entity_mention['text'] = charset.text.replace('f.','f .').replace('-',' ').replace('/', '/ ').replace('~',' ').replace('U.S.', 'U.S ')\
-                                            .replace('p.m.', 'p.m ').replace('a.m.','a.m ').replace('U.N.', 'U.N ').replace('u.n.','u.n ')\
-                                            .replace('u.s.','u.s ').replace('p.o.w.','p.o.w ').replace('germ.','germ ').replace('dr.','dr').replace('mt.', 'mt ')\
-                                            .replace('Gov.', 'Gov ')
+            entity_mention['text'] = Parser.normalize_text(charset.text)
             entity_mention['position'] = [int(charset.attrib['START']), int(charset.attrib['END'])]
             entity_mentions.append(entity_mention)
 
@@ -342,28 +416,19 @@ class Parser:
                 for child2 in child:
                     if child2.tag == 'extent':
                         charset = child2[0]
-                        event_mention['text'] = charset.text.replace('f.','f .').replace('-',' ').replace('/', '/ ').replace('~',' ').replace('U.S.', 'U.S ')\
-                                                        .replace('p.m.', 'p.m ').replace('a.m.','a.m ').replace('U.N.', 'U.N ').replace('u.n.','u.n ')\
-                                                        .replace('u.s.','u.s ').replace('p.o.w.','p.o.w ').replace('germ.','germ ').replace('dr.','dr').replace('mt.', 'mt ')\
-                                                        .replace('Gov.', 'Gov ')
+                        event_mention['text'] = Parser.normalize_text(charset.text)
                         event_mention['position'] = [int(charset.attrib['START']), int(charset.attrib['END'])]
                     if child2.tag == 'anchor':
                         charset = child2[0]
                         event_mention['trigger'] = {
-                            'text': charset.text.replace('f.','f .').replace('-',' ').replace('/', '/ ').replace('~',' ').replace('U.S.', 'U.S ')\
-                                            .replace('p.m.', 'p.m ').replace('a.m.','a.m ').replace('U.N.', 'U.N ').replace('u.n.','u.n ')\
-                                            .replace('u.s.','u.s ').replace('p.o.w.','p.o.w ').replace('germ.','germ ').replace('dr.','dr').replace('mt.', 'mt ')\
-                                            .replace('Gov.', 'Gov '),
+                            'text': Parser.normalize_text(charset.text),
                             'position': [int(charset.attrib['START']), int(charset.attrib['END'])],
                         }
                     if child2.tag == 'event_mention_argument':
                         extent = child2[0]
                         charset = extent[0]
                         event_mention['arguments'].append({
-                            'text': charset.text.replace('f.','f .').replace('-',' ').replace('/', '/ ').replace('~',' ').replace('U.S.', 'U.S ')\
-                                            .replace('p.m.', 'p.m ').replace('a.m.','a.m ').replace('U.N.', 'U.N ').replace('u.n.','u.n ')\
-                                            .replace('u.s.','u.s ').replace('p.o.w.','p.o.w ').replace('germ.','germ ').replace('dr.','dr').replace('mt.', 'mt ')\
-                                            .replace('Gov.', 'Gov '),
+                            'text': Parser.normalize_text(charset.text),
                             'position': [int(charset.attrib['START']), int(charset.attrib['END'])],
                             'role': child2.attrib['ROLE'],
                             'entity-id': child2.attrib['REFID']
@@ -389,13 +454,18 @@ class Parser:
             if child.tag == 'timex2_mention':
                 val_tim_mention['entity-type'] = 'TIM:time'
 
-            val_tim_mention['text'] = charset.text.replace('f.','f .').replace('-',' ').replace('/', '/ ').replace('~',' ').replace('U.S.', 'U.S ')\
-                                            .replace('p.m.', 'p.m ').replace('a.m.','a.m ').replace('U.N.', 'U.N ').replace('u.n.','u.n ')\
-                                            .replace('u.s.','u.s ').replace('p.o.w.','p.o.w ').replace('germ.','germ ').replace('dr.','dr').replace('mt.', 'mt ')\
-                                            .replace('Gov.', 'Gov ')
+            val_tim_mention['text'] = Parser.normalize_text(charset.text)
             val_tim_mention['position'] = [int(charset.attrib['START']), int(charset.attrib['END'])]
 
             entity_mentions.append(val_tim_mention)
 
         return entity_mentions
 
+    @staticmethod
+    def normalize_text(text):
+        if text is None: return None
+
+        return text.replace('f.','f .').replace('-',' ').replace('/', '/ ').replace('~',' ').replace('U.S.', 'U.S ')\
+                                            .replace('p.m.', 'p.m ').replace('a.m.','a.m ').replace('U.N.', 'U.N ').replace('u.n.','u.n ')\
+                                            .replace('u.s.','u.s ').replace('p.o.w.','p.o.w ').replace('germ.','germ ').replace('dr.','dr').replace('mt.', 'mt ')\
+                                            .replace('Gov.', 'Gov ')
